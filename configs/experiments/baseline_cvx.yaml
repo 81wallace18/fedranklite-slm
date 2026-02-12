@@ -1,0 +1,7 @@
+_base_: "../base.yaml"
+
+experiment_name: "baseline_cvx"
+
+federation:
+  scheduler:
+    type: "cvx"

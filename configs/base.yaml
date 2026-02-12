@@ -1,0 +1,90 @@
+seed: 42
+
+model:
+  name: "Qwen/Qwen2.5-1.5B"
+  quantization: "4bit"            # 4bit | 8bit | none
+  lora:
+    r_max: 16
+    r_min: 2
+    alpha: 32
+    target_modules: ["q_proj", "v_proj"]
+    dropout: 0.05
+
+federation:
+  num_rounds: 100
+  clients_per_round: 6
+  total_clients: 10
+
+  aggregation:
+    method: "fedavg"              # fedavg | fedavg_blockwise
+    weighting: "num_samples"      # num_samples | uniform
+
+  scheduler:
+    type: "lite"                  # cvx | lite | fixed
+    lite:
+      r_bar: 8                    # rank medio alvo (budget)
+      ema_alpha: 0.3              # decay do EMA de throughput/gain
+      gain_weight: 0.6            # peso do loss drop na score
+      throughput_weight: 0.4      # peso do throughput na score
+      deadline_penalty: 0.5       # fator de reducao se estourou deadline
+    cvx:
+      solver: "ECOS"
+      objective: "min_round_time"
+    fixed:
+      rank: 8
+
+training:
+  local_epochs: 3
+  batch_size: 8
+  lr: 2.0e-4
+  max_grad_norm: 1.0
+  optimizer: "adamw"
+  warmup_ratio: 0.06
+
+data:
+  dataset: "glue/sst2"
+  partition:
+    method: "dirichlet"           # dirichlet | label_skew | iid
+    alpha: 0.3
+    min_samples: 50
+  eval_split: 0.1                 # holdout global no server
+
+tiers:
+  - name: "gpu_fast"
+    count: 3
+    compute_factor: 1.0
+    memory_mb: 24000
+  - name: "gpu_medium"
+    count: 3
+    compute_factor: 0.7
+    memory_mb: 32000
+  - name: "cpu_slow"
+    count: 4
+    compute_factor: 0.15
+    memory_mb: 64000
+
+deadline:
+  enabled: true
+  seconds: 120
+  straggler_policy: "drop"        # drop | wait | use_partial
+
+evaluation:
+  target_score: 0.88
+  metric: "accuracy"              # accuracy | f1 | pearson
+  eval_every: 5
+
+metrics:
+  track_fairness: true
+  percentiles: [10, 50, 90]
+  track_comm_bytes: true
+  track_peak_memory: true
+
+logging:
+  output_dir: "results/${experiment_name}"
+  save_every: 10
+  log_telemetry: true
+  wandb:
+    enabled: false
+    project: "fedranklite"
+
+experiment_name: "default"

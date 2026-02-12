@@ -1,0 +1,9 @@
+_base_: "../base.yaml"
+
+experiment_name: "baseline_fixed_r8"
+
+federation:
+  scheduler:
+    type: "fixed"
+    fixed:
+      rank: 8

@@ -1,0 +1,21 @@
+_base_: "../base.yaml"
+
+experiment_name: "lite_noniid_hard"
+
+data:
+  partition:
+    method: "dirichlet"
+    alpha: 0.1                    # non-IID severo
+
+federation:
+  num_rounds: 150
+  scheduler:
+    type: "lite"
+    lite:
+      r_bar: 8
+      deadline_penalty: 0.7
+
+deadline:
+  enabled: true
+  seconds: 90
+  straggler_policy: "use_partial"

@@ -1,0 +1,11 @@
+_base_: "../base.yaml"
+
+experiment_name: "lite_iid"
+
+data:
+  partition:
+    method: "iid"
+
+federation:
+  scheduler:
+    type: "lite"
