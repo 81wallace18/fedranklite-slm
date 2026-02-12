@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
+from scipy.stats import pearsonr
 import torch
 from torch.utils.data import DataLoader
 
@@ -115,12 +116,17 @@ def evaluate_global(model, eval_dataloader: DataLoader, metric_name: str = "accu
     total_loss = 0.0
     count = 0
 
+    is_regression = metric_name == "pearson"
+
     for batch in eval_dataloader:
         batch = {k: v.to(device) for k, v in batch.items()}
         outputs = model(**batch)
         total_loss += outputs.loss.item() * batch["input_ids"].shape[0]
         count += batch["input_ids"].shape[0]
-        preds = outputs.logits.argmax(dim=-1)
+        if is_regression:
+            preds = outputs.logits.squeeze(-1)
+        else:
+            preds = outputs.logits.argmax(dim=-1)
         all_preds.extend(preds.cpu().tolist())
         all_labels.extend(batch["labels"].cpu().tolist())
 
@@ -128,10 +134,25 @@ def evaluate_global(model, eval_dataloader: DataLoader, metric_name: str = "accu
 
     if metric_name == "accuracy":
         score = sum(p == l for p, l in zip(all_preds, all_labels)) / max(len(all_preds), 1)
+    elif metric_name == "f1":
+        score = _f1_binary(all_preds, all_labels)
+    elif metric_name == "pearson":
+        score = pearsonr(all_preds, all_labels).statistic if len(all_preds) > 1 else 0.0
     else:
-        score = 0.0  # extend for f1, pearson etc
+        raise ValueError(f"Unknown metric: {metric_name}")
 
     return {"score": score, "loss": avg_loss}
+
+
+def _f1_binary(preds: list, labels: list) -> float:
+    tp = sum(p == 1 and l == 1 for p, l in zip(preds, labels))
+    fp = sum(p == 1 and l == 0 for p, l in zip(preds, labels))
+    fn = sum(p == 0 and l == 1 for p, l in zip(preds, labels))
+    precision = tp / max(tp + fp, 1)
+    recall = tp / max(tp + fn, 1)
+    if precision + recall == 0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
 
 
 def _telemetry_to_dict(t: RoundTelemetry) -> dict:
