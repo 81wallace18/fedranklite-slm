@@ -113,9 +113,11 @@ rank_i = clamp(round((score_i / total_score) * budget), r_min, r_max)
 
 Budget = `r_bar * num_selected_clients`. Greedy correction ensures exact budget match.
 
-## GLUE benchmark
+## Experiment tracks
 
-Reproduces the baseline paper's experimental setup with 5 GLUE tasks:
+### Track A — Reproduce baseline (GLUE, CVX vs Lite)
+
+Direct comparison with the baseline paper using the same 5 GLUE tasks, IID split, and client counts.
 
 | Task | Clients | Metric | Text format |
 |---|---|---|---|
@@ -126,10 +128,34 @@ Reproduces the baseline paper's experimental setup with 5 GLUE tasks:
 | RTE | 3 | Accuracy | Sentence pair |
 
 ```bash
-# run all GLUE tasks (example)
-for cfg in configs/experiments/glue/*_lite.yaml; do
-  python scripts/run.py --config "$cfg"
-done
+# Track A — baseline (CVX)
+python scripts/run.py --config configs/experiments/glue/sst2_cvx.yaml
+python scripts/run.py --config configs/experiments/glue/qnli_cvx.yaml
+python scripts/run.py --config configs/experiments/glue/mrpc_cvx.yaml
+python scripts/run.py --config configs/experiments/glue/stsb_cvx.yaml
+python scripts/run.py --config configs/experiments/glue/rte_cvx.yaml
+
+# Track A — ours (Lite)
+python scripts/run.py --config configs/experiments/glue/sst2_lite.yaml
+python scripts/run.py --config configs/experiments/glue/qnli_lite.yaml
+python scripts/run.py --config configs/experiments/glue/mrpc_lite.yaml
+python scripts/run.py --config configs/experiments/glue/stsb_lite.yaml
+python scripts/run.py --config configs/experiments/glue/rte_lite.yaml
+```
+
+### Track B — Our scenario (non-IID + deadlines + tiers)
+
+SLM-first evaluation with severe non-IID (Dirichlet alpha=0.1), hardware heterogeneity, and deadline enforcement.
+
+```bash
+# Track B — non-IID + deadline
+python scripts/run.py --config configs/experiments/lite_noniid_deadline.yaml
+
+# Track B — IID control
+python scripts/run.py --config configs/experiments/lite_iid.yaml
+
+# Track B — fixed rank ablation
+python scripts/run.py --config configs/experiments/baseline_fixed.yaml
 ```
 
 ## Hardware tiers
