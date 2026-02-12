@@ -25,7 +25,7 @@ def run(cfg: dict):
     r_max = cfg["model"]["lora"]["r_max"]
 
     # --- load model + tokenizer ---
-    num_labels = 2  # TODO: infer from dataset
+    num_labels = cfg["data"]["num_labels"]
     model, tokenizer = load_model(cfg, num_labels=num_labels)
 
     # --- load & partition data ---
