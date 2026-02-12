@@ -43,6 +43,10 @@ training:
 
 data:
   dataset: "glue/sst2"
+  task_type: "classification"     # classification | regression
+  num_labels: 2
+  text_columns: ["sentence"]      # 1 col = single, 2 cols = sentence pair
+  max_length: 128
   partition:
     method: "dirichlet"           # dirichlet | label_skew | iid
     alpha: 0.3

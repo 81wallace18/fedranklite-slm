@@ -16,34 +16,60 @@ def load_and_partition(cfg: dict, tokenizer) -> tuple[list[Dataset], Dataset]:
     train_ds = raw["train"]
     eval_ds = raw["validation"] if "validation" in raw else None
 
-    # tokenize
-    text_col = _find_text_column(train_ds)
+    text_cols = cfg["data"]["text_columns"]
+    max_length = cfg["data"].get("max_length", 128)
     label_col = "label"
 
     def tokenize_fn(examples):
+        if len(text_cols) == 2:
+            return tokenizer(
+                examples[text_cols[0]],
+                examples[text_cols[1]],
+                truncation=True,
+                padding="max_length",
+                max_length=max_length,
+            )
         return tokenizer(
-            examples[text_col],
+            examples[text_cols[0]],
             truncation=True,
             padding="max_length",
-            max_length=128,
+            max_length=max_length,
         )
 
-    train_ds = train_ds.map(tokenize_fn, batched=True, remove_columns=[text_col])
+    remove_cols = [c for c in text_cols if c in train_ds.column_names]
+    # also remove idx column if present
+    if "idx" in train_ds.column_names:
+        remove_cols.append("idx")
+
+    train_ds = train_ds.map(tokenize_fn, batched=True, remove_columns=remove_cols)
     train_ds = train_ds.rename_column(label_col, "labels")
     train_ds.set_format("torch", columns=["input_ids", "attention_mask", "labels"])
 
     if eval_ds is not None:
-        eval_ds = eval_ds.map(tokenize_fn, batched=True, remove_columns=[text_col])
+        remove_cols_eval = [c for c in text_cols if c in eval_ds.column_names]
+        if "idx" in eval_ds.column_names:
+            remove_cols_eval.append("idx")
+        eval_ds = eval_ds.map(tokenize_fn, batched=True, remove_columns=remove_cols_eval)
         eval_ds = eval_ds.rename_column(label_col, "labels")
         eval_ds.set_format("torch", columns=["input_ids", "attention_mask", "labels"])
 
     # partition
     part_cfg = cfg["data"]["partition"]
     n_clients = cfg["federation"]["total_clients"]
+
+    if cfg["data"]["task_type"] == "regression":
+        # for regression, use IID-like split (can't do label-based)
+        method = part_cfg["method"] if part_cfg["method"] == "iid" else part_cfg["method"]
+        labels_np = np.zeros(len(train_ds))  # dummy for partition
+    else:
+        method = part_cfg["method"]
+        labels_raw = train_ds["labels"]
+        labels_np = labels_raw.numpy() if hasattr(labels_raw, "numpy") else np.array(labels_raw)
+
     indices = _partition_indices(
-        labels=train_ds["labels"].numpy() if hasattr(train_ds["labels"], "numpy") else np.array(train_ds["labels"]),
+        labels=labels_np,
         n_clients=n_clients,
-        method=part_cfg["method"],
+        method=method,
         alpha=part_cfg.get("alpha", 1.0),
         min_samples=part_cfg.get("min_samples", 10),
         seed=cfg["seed"],
@@ -51,13 +77,6 @@ def load_and_partition(cfg: dict, tokenizer) -> tuple[list[Dataset], Dataset]:
     client_datasets = [train_ds.select(idx) for idx in indices]
 
     return client_datasets, eval_ds
-
-
-def _find_text_column(ds: Dataset) -> str:
-    for col in ("sentence", "text", "premise", "question"):
-        if col in ds.column_names:
-            return col
-    raise ValueError(f"Cannot find text column in {ds.column_names}")
 
 
 def _partition_indices(
