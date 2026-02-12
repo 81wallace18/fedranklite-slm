@@ -1,0 +1,22 @@
+_base_: "../../base.yaml"
+
+experiment_name: "glue_qnli_lite"
+
+data:
+  dataset: "glue/qnli"
+  task_type: "classification"
+  num_labels: 2
+  text_columns: ["question", "sentence"]
+  max_length: 256
+  partition:
+    method: "iid"
+
+federation:
+  total_clients: 12
+  clients_per_round: 8
+  scheduler:
+    type: "lite"
+
+evaluation:
+  target_score: 0.90
+  metric: "accuracy"

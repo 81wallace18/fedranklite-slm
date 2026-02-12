@@ -1,0 +1,21 @@
+_base_: "../../base.yaml"
+
+experiment_name: "glue_sst2_lite"
+
+data:
+  dataset: "glue/sst2"
+  task_type: "classification"
+  num_labels: 2
+  text_columns: ["sentence"]
+  partition:
+    method: "iid"
+
+federation:
+  total_clients: 12
+  clients_per_round: 8
+  scheduler:
+    type: "lite"
+
+evaluation:
+  target_score: 0.92
+  metric: "accuracy"

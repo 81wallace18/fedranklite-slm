@@ -1,0 +1,21 @@
+_base_: "../../base.yaml"
+
+experiment_name: "glue_rte_cvx"
+
+data:
+  dataset: "glue/rte"
+  task_type: "classification"
+  num_labels: 2
+  text_columns: ["sentence1", "sentence2"]
+  partition:
+    method: "iid"
+
+federation:
+  total_clients: 3
+  clients_per_round: 3
+  scheduler:
+    type: "cvx"
+
+evaluation:
+  target_score: 0.65
+  metric: "accuracy"
