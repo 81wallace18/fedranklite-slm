@@ -19,12 +19,16 @@ def main():
 
     cfg = load_config(args.config)
 
+    # Create output directory if it doesn't exist
+    out_dir = Path(cfg["logging"]["output_dir"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(Path(cfg["logging"]["output_dir"]) / "run.log"),
+            logging.FileHandler(out_dir / "run.log"),
         ],
     )
 

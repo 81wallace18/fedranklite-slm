@@ -21,13 +21,19 @@ def load_model(cfg: dict, num_labels: int = 2):
     elif quant == "8bit":
         bnb_config = BitsAndBytesConfig(load_in_8bit=True)
 
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name,
         num_labels=num_labels,
         quantization_config=bnb_config,
         torch_dtype=torch.bfloat16 if bnb_config is None else None,
         device_map="auto",
+        pad_token_id=tokenizer.pad_token_id,
     )
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     peft_config = LoraConfig(
         task_type=TaskType.SEQ_CLS,
@@ -37,11 +43,6 @@ def load_model(cfg: dict, num_labels: int = 2):
         target_modules=lora_cfg["target_modules"],
     )
     model = get_peft_model(model, peft_config)
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        model.config.pad_token_id = tokenizer.pad_token_id
 
     return model, tokenizer
 
