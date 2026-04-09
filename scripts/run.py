@@ -4,7 +4,11 @@
 import argparse
 import logging
 import sys
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message=".*use_return_dict.*")
+warnings.filterwarnings("ignore", message=".*torch_dtype.*is deprecated.*")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
