@@ -16,6 +16,21 @@ from .schedulers import build_scheduler
 logger = logging.getLogger(__name__)
 
 
+def _format_time(seconds: float) -> str:
+    """Formata segundos em formato legivel (HH:MM:SS)."""
+    if seconds < 0:
+        return "--:--:--"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    if hours > 0:
+        return f"{hours:02d}h {minutes:02d}m {secs:02d}s"
+    elif minutes > 0:
+        return f"{minutes:02d}m {secs:02d}s"
+    else:
+        return f"{secs:02d}s"
+
+
 def run(cfg: dict):
     seed = cfg["seed"]
     np.random.seed(seed)
@@ -23,6 +38,7 @@ def run(cfg: dict):
 
     fed_cfg = cfg["federation"]
     r_max = cfg["model"]["lora"]["r_max"]
+    total_rounds = fed_cfg["num_rounds"]
 
     # --- load model + tokenizer ---
     num_labels = cfg["data"]["num_labels"]
@@ -44,11 +60,25 @@ def run(cfg: dict):
     tier_assignment = _assign_tiers(all_client_ids, cfg["tiers"])
 
     telemetry_history: list[dict] = []
+    round_times: list[float] = []
+    training_start = time.time()
 
-    logger.info(f"Starting federation: {fed_cfg['num_rounds']} rounds, {fed_cfg['total_clients']} clients")
+    print(f"\n{'=' * 60}")
+    print(f"  Starting federation: {total_rounds} rounds, {fed_cfg['total_clients']} clients")
+    print(f"  Scheduler: {fed_cfg['scheduler']['type']} | Deadline: {cfg['deadline']['seconds']}s")
+    print(f"  Model: {cfg['model']['name']} | LoRA r_max={r_max}")
+    print(f"{'=' * 60}\n")
 
-    for round_id in range(fed_cfg["num_rounds"]):
+    for round_id in range(total_rounds):
         t_round_start = time.time()
+
+        # ETA calculation
+        if round_times:
+            avg_round_time = sum(round_times) / len(round_times)
+            eta_seconds = avg_round_time * (total_rounds - round_id)
+            eta_str = _format_time(eta_seconds)
+        else:
+            eta_str = "calculating..."
 
         # select clients for this round
         selected = rng.choice(
@@ -56,6 +86,11 @@ def run(cfg: dict):
             size=min(fed_cfg["clients_per_round"], len(all_client_ids)),
             replace=False,
         ).tolist()
+
+        print(f"\n{'=' * 60}")
+        print(f"  Round {round_id + 1}/{total_rounds} | ETA: {eta_str}")
+        print(f"  Selected clients: {selected}")
+        print(f"{'=' * 60}")
 
         # build client_info with compute_factor + deadline for scheduler
         client_info = {
@@ -75,10 +110,8 @@ def run(cfg: dict):
         for i, cid in enumerate(selected):
             rank = assignments[cid]["rank"]
             tier = tier_assignment[cid]
-            logger.info(
-                f"  [Round {round_id}] Client {cid} ({i+1}/{len(selected)}) "
-                f"training — rank={rank}, tier={tier['name']}, cf={tier['compute_factor']}"
-            )
+
+            print(f"  Training client {cid} ({i+1}/{len(selected)}) | rank={rank}, tier={tier['name']}, cf={tier['compute_factor']}")
 
             loader = make_dataloader(client_datasets[cid], cfg["training"]["batch_size"])
 
@@ -95,10 +128,9 @@ def run(cfg: dict):
             real_time = result.train_time
             result.train_time /= tier["compute_factor"]
 
-            logger.info(
-                f"  [Round {round_id}] Client {cid} done — "
-                f"loss {result.loss_before:.4f}→{result.loss_after:.4f}, "
-                f"real={real_time:.1f}s, simulated={result.train_time:.1f}s"
+            print(
+                f"    -> Client {cid} done in {_format_time(real_time)} (simulated: {_format_time(result.train_time)}) | "
+                f"loss: {result.loss_before:.4f} -> {result.loss_after:.4f} | mem: {result.peak_memory_mb:.0f}MB"
             )
 
             # check deadline
@@ -109,7 +141,7 @@ def run(cfg: dict):
                 round_exceeded_deadline = True
                 if cfg["deadline"]["straggler_policy"] == "drop":
                     dropped = True
-                    logger.info(f"  [Round {round_id}] Client {cid} DROPPED (deadline {cfg['deadline']['seconds']}s exceeded: {result.train_time:.1f}s)")
+                    print(f"    ** DROPPED (deadline {cfg['deadline']['seconds']}s exceeded: {result.train_time:.1f}s)")
 
             # always store telemetry (even for dropped clients — scheduler needs feedback)
             telemetry_history.append({
@@ -132,6 +164,7 @@ def run(cfg: dict):
             results.append(result)
 
         # aggregate
+        print("  Aggregating client models...")
         if results:
             agg_cfg = fed_cfg["aggregation"]
             global_lora = aggregate_lora(
@@ -140,23 +173,32 @@ def run(cfg: dict):
                 weighting=agg_cfg["weighting"],
             )
             set_lora_state(model, global_lora)
+        else:
+            print("  Warning: No successful client updates. Skipping aggregation.")
 
         round_time = time.time() - t_round_start
-
+        round_times.append(round_time)
+        total_elapsed = time.time() - training_start
         n_dropped = len(selected) - len(results)
-        logger.info(
-            f"Round {round_id}/{fed_cfg['num_rounds']-1} complete — "
-            f"{len(results)} active, {n_dropped} dropped, time={round_time:.1f}s"
-        )
 
         # evaluate
         eval_score = None
         eval_loss = None
+        eval_str = ""
         if eval_loader and (round_id + 1) % cfg["evaluation"]["eval_every"] == 0:
             eval_result = evaluate_global(model, eval_loader, cfg["evaluation"]["metric"])
             eval_score = eval_result["score"]
             eval_loss = eval_result["loss"]
-            logger.info(f"  >>> Eval: score={eval_score:.4f}, loss={eval_loss:.4f}")
+            eval_str = f" | Eval: {eval_score:.4f}"
+
+        print(
+            f"  Round {round_id + 1} completed in {_format_time(round_time)} | "
+            f"Total: {_format_time(total_elapsed)} | "
+            f"{len(results)} active, {n_dropped} dropped{eval_str}"
+        )
+
+        if eval_score is not None and tracker.target_round is None and eval_score >= cfg["evaluation"]["target_score"]:
+            print(f"  >>> TARGET SCORE {cfg['evaluation']['target_score']} REACHED at round {round_id + 1}! (score={eval_score:.4f})")
 
         # log round
         client_dicts = [
@@ -188,12 +230,16 @@ def run(cfg: dict):
 
     # final save
     tracker.save()
-    _save_checkpoint(global_lora, fed_cfg["num_rounds"] - 1, tracker.output_dir)
+    _save_checkpoint(global_lora, total_rounds - 1, tracker.output_dir)
 
-    logger.info(
-        f"Done. Target reached at round {tracker.target_round}. "
-        f"Deadline compliance: {tracker.deadline_compliance():.2%}"
-    )
+    total_time = time.time() - training_start
+    print(f"\n{'=' * 60}")
+    print(f"  TRAINING COMPLETE")
+    print(f"  Total time: {_format_time(total_time)}")
+    print(f"  Avg per round: {_format_time(total_time / total_rounds)}")
+    print(f"  Target reached at round: {tracker.target_round}")
+    print(f"  Deadline compliance: {tracker.deadline_compliance():.2%}")
+    print(f"{'=' * 60}")
 
     return tracker
 
@@ -215,4 +261,4 @@ def _assign_tiers(client_ids: list[int], tiers: list[dict]) -> dict[int, dict]:
 def _save_checkpoint(lora_state: dict, round_id: int, output_dir):
     path = output_dir / f"lora_round_{round_id}.pt"
     torch.save(lora_state, path)
-    logger.info(f"Checkpoint saved: {path}")
+    print(f"  Checkpoint saved: {path}")
