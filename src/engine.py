@@ -57,8 +57,16 @@ def run(cfg: dict):
             replace=False,
         ).tolist()
 
+        # build client_info with compute_factor + deadline for scheduler
+        client_info = {
+            cid: {"compute_factor": tier_assignment[cid]["compute_factor"]}
+            for cid in selected
+        }
+        if cfg["deadline"]["enabled"]:
+            client_info["_deadline_seconds"] = cfg["deadline"]["seconds"]
+
         # scheduler decides ranks
-        assignments = scheduler.allocate(round_id, selected, telemetry_history)
+        assignments = scheduler.allocate(round_id, selected, telemetry_history, client_info)
 
         # train each client
         results: list[ClientResult] = []
@@ -83,16 +91,15 @@ def run(cfg: dict):
 
             # check deadline
             exceeded = False
+            dropped = False
             if cfg["deadline"]["enabled"] and result.train_time > cfg["deadline"]["seconds"]:
                 exceeded = True
                 round_exceeded_deadline = True
                 if cfg["deadline"]["straggler_policy"] == "drop":
+                    dropped = True
                     logger.info(f"  Client {cid} dropped (deadline exceeded: {result.train_time:.1f}s)")
-                    continue
 
-            results.append(result)
-
-            # store telemetry
+            # always store telemetry (even for dropped clients — scheduler needs feedback)
             telemetry_history.append({
                 "client_id": cid,
                 "round_id": round_id,
@@ -104,7 +111,13 @@ def run(cfg: dict):
                 "peak_memory_mb": result.peak_memory_mb,
                 "bytes_sent": result.bytes_sent,
                 "exceeded_deadline": exceeded,
+                "dropped": dropped,
             })
+
+            if dropped:
+                continue
+
+            results.append(result)
 
         # aggregate
         if results:

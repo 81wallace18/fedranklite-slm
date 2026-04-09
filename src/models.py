@@ -63,29 +63,38 @@ def set_lora_state(model, state: dict[str, torch.Tensor]):
 
 
 def mask_lora_rank(model, rank: int):
+    """Truncate LoRA matrices to the given rank, reducing actual computation.
+
+    After this call lora_A weights have shape (rank, in_features) and lora_B
+    weights have shape (out_features, rank).  The forward/backward pass
+    operates on smaller matrices so training time scales with rank.
+    """
     for name, param in model.named_parameters():
         if "lora_" not in name or not param.requires_grad:
             continue
-        if "lora_A" in name:
-            # A shape: (r_max, in_features) — freeze rows beyond rank
-            if param.shape[0] > rank:
-                param.data[rank:] = 0.0
-                param.register_hook(_zero_grad_hook(rank, dim=0))
-        elif "lora_B" in name:
-            # B shape: (out_features, r_max) — freeze cols beyond rank
-            if param.shape[1] > rank:
-                param.data[:, rank:] = 0.0
-                param.register_hook(_zero_grad_hook(rank, dim=1))
+        if "lora_A" in name and param.shape[0] > rank:
+            param.data = param.data[:rank, :].contiguous().clone()
+        elif "lora_B" in name and param.shape[1] > rank:
+            param.data = param.data[:, :rank].contiguous().clone()
 
 
-def _zero_grad_hook(rank: int, dim: int):
-    def hook(grad):
-        if dim == 0:
-            grad[rank:] = 0.0
-        else:
-            grad[:, rank:] = 0.0
-        return grad
-    return hook
+def restore_lora_rank(model, r_max: int):
+    """Pad LoRA matrices back to r_max after truncated training."""
+    for name, param in model.named_parameters():
+        if "lora_" not in name or not param.requires_grad:
+            continue
+        if "lora_A" in name and param.shape[0] < r_max:
+            pad = torch.zeros(
+                r_max - param.shape[0], param.shape[1],
+                dtype=param.dtype, device=param.device,
+            )
+            param.data = torch.cat([param.data, pad], dim=0)
+        elif "lora_B" in name and param.shape[1] < r_max:
+            pad = torch.zeros(
+                param.shape[0], r_max - param.shape[1],
+                dtype=param.dtype, device=param.device,
+            )
+            param.data = torch.cat([param.data, pad], dim=1)
 
 
 def truncate_lora_state(state: dict[str, torch.Tensor], rank: int) -> dict[str, torch.Tensor]:

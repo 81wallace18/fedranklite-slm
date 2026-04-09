@@ -5,3 +5,7 @@ experiment_name: "baseline_cvx"
 federation:
   scheduler:
     type: "cvx"
+    cvx:
+      r_bar: 8
+      solver: "ECOS"
+      objective: "min_round_time"

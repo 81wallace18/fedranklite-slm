@@ -14,6 +14,14 @@ class Scheduler(ABC):
         round_id: int,
         client_ids: list[int],
         telemetry: list[dict],
+        client_info: dict[int, dict] | None = None,
     ) -> dict[int, dict]:
-        """Return {client_id: {"rank": int}} for each client in the round."""
+        """Return {client_id: {"rank": int}} for each client in the round.
+
+        Parameters
+        ----------
+        client_info : optional mapping ``{client_id: {"compute_factor": float, ...}}``
+            Hardware profile for each client so the scheduler can estimate
+            whether a given rank is feasible within the deadline.
+        """
         ...

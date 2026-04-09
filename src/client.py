@@ -7,7 +7,12 @@ import psutil
 import torch
 from torch.utils.data import DataLoader
 
-from .models import get_lora_state, mask_lora_rank, set_lora_state, truncate_lora_state
+from .models import (
+    get_lora_state,
+    mask_lora_rank,
+    restore_lora_rank,
+    set_lora_state,
+)
 
 
 @dataclass
@@ -31,8 +36,10 @@ def train_client(
     assigned_rank: int,
     cfg: dict,
 ) -> ClientResult:
+    r_max = cfg["model"]["lora"]["r_max"]
+
     set_lora_state(model, global_lora)
-    mask_lora_rank(model, assigned_rank)
+    mask_lora_rank(model, assigned_rank)  # truncate to real rank — fewer FLOPs
 
     device = next(model.parameters()).device
     is_cuda = device.type == "cuda"
@@ -43,7 +50,7 @@ def train_client(
     # evaluate loss before training
     loss_before = _eval_loss(model, dataloader, device)
 
-    # setup optimizer
+    # setup optimizer (sees only rank-sized params)
     train_cfg = cfg["training"]
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=train_cfg["lr"])
@@ -74,13 +81,20 @@ def train_client(
     else:
         peak_mem = psutil.Process().memory_info().rss / (1024 ** 2)
 
-    # extract and truncate LoRA delta
+    # extract rank-sized LoRA state and compute delta against truncated global
     updated_lora = get_lora_state(model)
-    delta = {
-        k: updated_lora[k] - global_lora[k].to(updated_lora[k].device)
-        for k in updated_lora
-    }
-    delta = truncate_lora_state(delta, assigned_rank)
+    delta = {}
+    for k in updated_lora:
+        if "lora_A" in k:
+            ref = global_lora[k][:assigned_rank]
+        elif "lora_B" in k:
+            ref = global_lora[k][:, :assigned_rank]
+        else:
+            ref = global_lora[k]
+        delta[k] = updated_lora[k] - ref.to(updated_lora[k].device)
+
+    # restore model to r_max for next client
+    restore_lora_rank(model, r_max)
 
     bytes_sent = sum(v.numel() * v.element_size() for v in delta.values())
 

@@ -12,6 +12,7 @@ class LiteScheduler(Scheduler):
     Rank allocated proportional to score, constrained to [r_min, r_max] and budget r_bar * N.
     EMA smoothing on throughput and gain to avoid oscillation.
     Deadline penalty: if a client exceeded deadline last round, its rank is reduced.
+    Deadline viability: after allocation, ranks are capped so estimated time fits the deadline.
     """
 
     def __init__(
@@ -35,8 +36,9 @@ class LiteScheduler(Scheduler):
         # EMA state per client
         self._ema_throughput: dict[int, float] = {}
         self._ema_gain: dict[int, float] = {}
+        self._ema_time_per_rank: dict[int, float] = {}
 
-    def allocate(self, round_id, client_ids, telemetry):
+    def allocate(self, round_id, client_ids, telemetry, client_info=None):
         n = len(client_ids)
         budget = self.r_bar * n
 
@@ -44,8 +46,11 @@ class LiteScheduler(Scheduler):
         if round_id == 0 or not telemetry:
             return {cid: {"rank": self.r_bar} for cid in client_ids}
 
-        # build lookup from telemetry
-        tel_map = {t["client_id"]: t for t in telemetry if t["client_id"] in client_ids}
+        # build lookup: keep most recent entry per client
+        tel_map: dict[int, dict] = {}
+        for t in telemetry:
+            if t["client_id"] in client_ids:
+                tel_map[t["client_id"]] = t
 
         # update EMA and compute scores
         scores = {}
@@ -57,6 +62,7 @@ class LiteScheduler(Scheduler):
 
             throughput = t.get("n_samples", 0) / max(t.get("train_time", 1.0), 1e-6)
             gain = max(t.get("loss_before", 0) - t.get("loss_after", 0), 0.0)
+            tpr = t.get("train_time", 1.0) / max(t.get("rank_used", 1), 1)
 
             # EMA update
             if cid in self._ema_throughput:
@@ -66,9 +72,13 @@ class LiteScheduler(Scheduler):
                 self._ema_gain[cid] = (
                     self.ema_alpha * gain + (1 - self.ema_alpha) * self._ema_gain[cid]
                 )
+                self._ema_time_per_rank[cid] = (
+                    self.ema_alpha * tpr + (1 - self.ema_alpha) * self._ema_time_per_rank[cid]
+                )
             else:
                 self._ema_throughput[cid] = throughput
                 self._ema_gain[cid] = gain
+                self._ema_time_per_rank[cid] = tpr
 
             score = (
                 self.gain_weight * self._ema_gain[cid]
@@ -108,5 +118,21 @@ class LiteScheduler(Scheduler):
                 step = min(-diff, r - self.r_min)
                 assignments[cid]["rank"] = r - step
                 diff += step
+
+        # --- Deadline viability: cap ranks so estimated time fits deadline ---
+        if client_info:
+            deadline = client_info.get("_deadline_seconds")
+            if deadline and deadline > 0:
+                for cid in client_ids:
+                    cf = client_info.get(cid, {}).get("compute_factor", 1.0)
+                    tpr = self._ema_time_per_rank.get(cid)
+                    if tpr is None or tpr <= 0:
+                        continue
+                    r = assignments[cid]["rank"]
+                    est_time = tpr * r / cf
+                    while est_time > deadline and r > self.r_min:
+                        r -= 1
+                        est_time = tpr * r / cf
+                    assignments[cid]["rank"] = r
 
         return assignments
