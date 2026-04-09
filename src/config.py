@@ -24,16 +24,22 @@ def _resolve_vars(cfg: dict) -> dict:
     return yaml.safe_load(raw)
 
 
-def load_config(path: str | Path) -> dict:
-    path = Path(path).resolve()
+def _load_raw(path: Path) -> dict:
+    """Load and merge YAML chain without resolving variables."""
     with open(path) as f:
         cfg = yaml.safe_load(f)
 
     base_ref = cfg.pop("_base_", None)
     if base_ref:
         base_path = (path.parent / base_ref).resolve()
-        base_cfg = load_config(base_path)
+        base_cfg = _load_raw(base_path)
         cfg = _deep_merge(base_cfg, cfg)
 
+    return cfg
+
+
+def load_config(path: str | Path) -> dict:
+    path = Path(path).resolve()
+    cfg = _load_raw(path)
     cfg = _resolve_vars(cfg)
     return cfg
