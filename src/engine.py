@@ -72,8 +72,14 @@ def run(cfg: dict):
         results: list[ClientResult] = []
         round_exceeded_deadline = False
 
-        for cid in selected:
+        for i, cid in enumerate(selected):
             rank = assignments[cid]["rank"]
+            tier = tier_assignment[cid]
+            logger.info(
+                f"  [Round {round_id}] Client {cid} ({i+1}/{len(selected)}) "
+                f"training — rank={rank}, tier={tier['name']}, cf={tier['compute_factor']}"
+            )
+
             loader = make_dataloader(client_datasets[cid], cfg["training"]["batch_size"])
 
             result = train_client(
@@ -86,8 +92,14 @@ def run(cfg: dict):
             )
 
             # simulate tier speed factor
-            tier = tier_assignment[cid]
+            real_time = result.train_time
             result.train_time /= tier["compute_factor"]
+
+            logger.info(
+                f"  [Round {round_id}] Client {cid} done — "
+                f"loss {result.loss_before:.4f}→{result.loss_after:.4f}, "
+                f"real={real_time:.1f}s, simulated={result.train_time:.1f}s"
+            )
 
             # check deadline
             exceeded = False
@@ -97,7 +109,7 @@ def run(cfg: dict):
                 round_exceeded_deadline = True
                 if cfg["deadline"]["straggler_policy"] == "drop":
                     dropped = True
-                    logger.info(f"  Client {cid} dropped (deadline exceeded: {result.train_time:.1f}s)")
+                    logger.info(f"  [Round {round_id}] Client {cid} DROPPED (deadline {cfg['deadline']['seconds']}s exceeded: {result.train_time:.1f}s)")
 
             # always store telemetry (even for dropped clients — scheduler needs feedback)
             telemetry_history.append({
@@ -131,6 +143,12 @@ def run(cfg: dict):
 
         round_time = time.time() - t_round_start
 
+        n_dropped = len(selected) - len(results)
+        logger.info(
+            f"Round {round_id}/{fed_cfg['num_rounds']-1} complete — "
+            f"{len(results)} active, {n_dropped} dropped, time={round_time:.1f}s"
+        )
+
         # evaluate
         eval_score = None
         eval_loss = None
@@ -138,6 +156,7 @@ def run(cfg: dict):
             eval_result = evaluate_global(model, eval_loader, cfg["evaluation"]["metric"])
             eval_score = eval_result["score"]
             eval_loss = eval_result["loss"]
+            logger.info(f"  >>> Eval: score={eval_score:.4f}, loss={eval_loss:.4f}")
 
         # log round
         client_dicts = [
