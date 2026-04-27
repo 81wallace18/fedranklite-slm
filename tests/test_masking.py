@@ -23,18 +23,24 @@ def small_model():
     return model
 
 
-class TestTruncation:
-    def test_truncate_reduces_actual_shape(self, small_model):
-        """After truncation, lora_A has shape (rank, d) and lora_B has shape (d, rank)."""
+class TestZeroMasking:
+    def test_mask_keeps_shape_but_zeros_weights(self, small_model):
+        """After masking, shape is unchanged but weights beyond rank are zero."""
+        r_max = 8
         mask_lora_rank(small_model, rank=4)
+
         for name, param in small_model.named_parameters():
             if "lora_A" in name and param.requires_grad:
-                assert param.shape[0] == 4, f"{name} should have 4 rows, got {param.shape[0]}"
+                assert param.shape[0] == r_max, f"{name}: expected r_max={r_max}, got {param.shape[0]}"
+                assert torch.all(param.data[4:] == 0), f"{name}: rows beyond rank=4 should be zero"
+                assert not torch.all(param.data[:4] == 0), f"{name}: first 4 rows should be non-zero (unless randomly zero)"
             if "lora_B" in name and param.requires_grad:
-                assert param.shape[1] == 4, f"{name} should have 4 cols, got {param.shape[1]}"
+                assert param.shape[1] == r_max, f"{name}: expected r_max={r_max}, got {param.shape[1]}"
+                assert torch.all(param.data[:, 4:] == 0), f"{name}: cols beyond rank=4 should be zero"
+                assert not torch.all(param.data[:, :4] == 0), f"{name}: first 4 cols should be non-zero (unless randomly zero)"
 
-    def test_truncated_forward_works(self, small_model):
-        """Model can still do forward pass after truncation."""
+    def test_masked_forward_works(self, small_model):
+        """Model can still do forward pass after masking."""
         mask_lora_rank(small_model, rank=4)
         dummy_input = {
             "input_ids": torch.randint(0, 100, (2, 16)),
@@ -45,8 +51,8 @@ class TestTruncation:
         assert output.loss is not None
         output.loss.backward()
 
-    def test_truncated_backward_only_updates_rank_dims(self, small_model):
-        """After truncation to rank=4, gradients only exist for 4 dimensions."""
+    def test_masked_backward_only_updates_rank_dims(self, small_model):
+        """After masking to rank=4, gradients only exist for 4 dimensions."""
         mask_lora_rank(small_model, rank=4)
         dummy_input = {
             "input_ids": torch.randint(0, 100, (2, 16)),
@@ -58,32 +64,20 @@ class TestTruncation:
 
         for name, param in small_model.named_parameters():
             if "lora_A" in name and param.grad is not None:
-                assert param.grad.shape[0] == 4
+                assert param.grad.shape[0] == 8, f"{name}: grad shape should be (8, d)"
+                assert torch.all(param.grad[4:] == 0), f"{name}: gradients beyond rank=4 should be zero"
+                assert not torch.all(param.grad[:4] == 0), f"{name}: first 4 grads should be non-zero (unless zero loss)"
             if "lora_B" in name and param.grad is not None:
-                assert param.grad.shape[1] == 4
+                assert param.grad.shape[1] == 8, f"{name}: grad shape should be (d, 8)"
+                assert torch.all(param.grad[:, 4:] == 0), f"{name}: gradients beyond rank=4 should be zero"
+                assert not torch.all(param.grad[:, :4] == 0), f"{name}: first 4 grads should be non-zero (unless zero loss)"
 
-    def test_restore_after_truncate(self, small_model):
-        """restore_lora_rank pads back to r_max."""
-        original_shapes = {}
-        for name, param in small_model.named_parameters():
-            if "lora_" in name and param.requires_grad:
-                original_shapes[name] = param.shape
-
-        mask_lora_rank(small_model, rank=4)
-        restore_lora_rank(small_model, r_max=8)
-
-        for name, param in small_model.named_parameters():
-            if name in original_shapes:
-                assert param.shape == original_shapes[name], (
-                    f"{name}: expected {original_shapes[name]}, got {param.shape}"
-                )
-
-    def test_restore_preserves_trained_dims(self, small_model):
-        """After truncate→train→restore, the first rank dims are preserved."""
-        state_before = get_lora_state(small_model)
+    def test_restore_is_noop(self, small_model):
+        """restore_lora_rank does nothing with zero masking."""
+        original_state = get_lora_state(small_model)
         mask_lora_rank(small_model, rank=4)
 
-        # modify the truncated params to simulate training
+        # modify masked params to simulate training
         for name, param in small_model.named_parameters():
             if "lora_" in name and param.requires_grad:
                 param.data.fill_(1.0)
@@ -91,16 +85,32 @@ class TestTruncation:
         restore_lora_rank(small_model, r_max=8)
         state_after = get_lora_state(small_model)
 
-        for k in state_after:
-            if "lora_A" in k:
-                assert torch.all(state_after[k][:4] == 1.0)
-                assert torch.all(state_after[k][4:] == 0.0)
-            elif "lora_B" in k:
-                assert torch.all(state_after[k][:, :4] == 1.0)
-                assert torch.all(state_after[k][:, 4:] == 0.0)
+        # restore should be no-op — shape unchanged, values preserved
+        for k in original_state:
+            assert state_after[k].shape == original_state[k].shape
+            # after training, values should be 1.0 (not restored to original)
+            assert torch.all(state_after[k] == 1.0)
 
-    def test_no_truncation_when_rank_equals_rmax(self, small_model):
-        """When rank == r_max, nothing changes."""
+    def test_mask_preserves_trained_dims(self, small_model):
+        """After mask→train, only active rank dims are updated."""
+        mask_lora_rank(small_model, rank=4)
+        state_masked = get_lora_state(small_model)
+
+        # modify masked params to simulate training
+        for name, param in small_model.named_parameters():
+            if "lora_" in name and param.requires_grad:
+                param.data.fill_(1.0)
+
+        state_after_training = get_lora_state(small_model)
+
+        for k in state_after_training:
+            if "lora_A" in k:
+                assert torch.all(state_after_training[k] == 1.0), f"{k}: should all be 1.0"
+            elif "lora_B" in k:
+                assert torch.all(state_after_training[k] == 1.0), f"{k}: should all be 1.0"
+
+    def test_no_masking_when_rank_equals_rmax(self, small_model):
+        """When rank == r_max, nothing is zeroed out."""
         shapes_before = {
             name: param.shape
             for name, param in small_model.named_parameters()
@@ -110,6 +120,15 @@ class TestTruncation:
         for name, param in small_model.named_parameters():
             if name in shapes_before:
                 assert param.shape == shapes_before[name]
+                # gradients should exist for all dims (not zeroed out)
+                dummy_input = {
+                    "input_ids": torch.randint(0, 100, (2, 16)),
+                    "attention_mask": torch.ones(2, 16, dtype=torch.long),
+                    "labels": torch.tensor([0, 1]),
+                }
+                small_model(**dummy_input).loss.backward()
+                if param.grad is not None:
+                    assert not torch.all(param.grad == 0), f"{name}: grads should be non-zero (unless zero loss)"
 
 
 class TestTruncateAndPad:

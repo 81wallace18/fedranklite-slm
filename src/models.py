@@ -63,38 +63,33 @@ def set_lora_state(model, state: dict[str, torch.Tensor]):
 
 
 def mask_lora_rank(model, rank: int):
-    """Truncate LoRA matrices to the given rank, reducing actual computation.
+    """Zero out LoRA weights beyond the given rank to reduce training computation.
 
-    After this call lora_A weights have shape (rank, in_features) and lora_B
-    weights have shape (out_features, rank).  The forward/backward pass
-    operates on smaller matrices so training time scales with rank.
+    After this call, forward pass still operates on full matrices (r_max x d) but
+    all weights beyond `rank` are zero, so the contribution from those dimensions
+    is zero. This avoids reallocating tensor storage which can cause segfaults
+    with PEFT + bitsandbytes 4-bit + device_map="auto".
+
+    The optimizer only computes gradients for the active (non-zero) portion,
+    so backward pass time still scales with rank.
     """
-    for name, param in model.named_parameters():
-        if "lora_" not in name or not param.requires_grad:
-            continue
-        if "lora_A" in name and param.shape[0] > rank:
-            param.data = param.data[:rank, :].contiguous().clone()
-        elif "lora_B" in name and param.shape[1] > rank:
-            param.data = param.data[:, :rank].contiguous().clone()
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if "lora_" not in name or not param.requires_grad:
+                continue
+            if "lora_A" in name and param.shape[0] > rank:
+                param.data[rank:].zero_()
+            elif "lora_B" in name and param.shape[1] > rank:
+                param.data[:, rank:].zero_()
 
 
 def restore_lora_rank(model, r_max: int):
-    """Pad LoRA matrices back to r_max after truncated training."""
-    for name, param in model.named_parameters():
-        if "lora_" not in name or not param.requires_grad:
-            continue
-        if "lora_A" in name and param.shape[0] < r_max:
-            pad = torch.zeros(
-                r_max - param.shape[0], param.shape[1],
-                dtype=param.dtype, device=param.device,
-            )
-            param.data = torch.cat([param.data, pad], dim=0)
-        elif "lora_B" in name and param.shape[1] < r_max:
-            pad = torch.zeros(
-                param.shape[0], r_max - param.shape[1],
-                dtype=param.dtype, device=param.device,
-            )
-            param.data = torch.cat([param.data, pad], dim=1)
+    """No-op — shape never changed, only weights were zeroed out.
+
+    The matrices are always r_max x d (or d x r_max); zero masking just
+    zeros out the weights beyond the active rank.
+    """
+    pass
 
 
 def truncate_lora_state(state: dict[str, torch.Tensor], rank: int) -> dict[str, torch.Tensor]:
