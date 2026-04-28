@@ -87,11 +87,14 @@ def train_client(
     for k in updated_lora:
         if "lora_A" in k:
             ref = global_lora[k][:assigned_rank]
+            updated = updated_lora[k][:assigned_rank]  # same truncation for delta
         elif "lora_B" in k:
             ref = global_lora[k][:, :assigned_rank]
+            updated = updated_lora[k][:, :assigned_rank]  # same truncation for delta
         else:
             ref = global_lora[k]
-        delta[k] = updated_lora[k] - ref.to(updated_lora[k].device)
+            updated = updated_lora[k]
+        delta[k] = updated - ref.to(updated.device)
 
     # restore model to r_max for next client
     restore_lora_rank(model, r_max)
